@@ -1,0 +1,138 @@
+/* Penumbra: panel and settings look. Colours come from the libadwaita theme. */
+
+window.pen-window, window.pen-scrim {
+  background: transparent;
+  box-shadow: none;
+}
+
+.pen-panel {
+  background-color: alpha(@window_bg_color, 0.97);
+  color: @window_fg_color;
+  border-radius: 20px;
+  border: 1px solid alpha(@window_fg_color, 0.12);
+  box-shadow: 0 10px 34px alpha(black, 0.5), 0 2px 8px alpha(black, 0.3);
+}
+
+.pen-header { padding: 12px 12px 6px 18px; }
+.pen-heading { font-weight: 800; font-size: 1.15em; }
+
+.pen-card {
+  background-color: alpha(@window_fg_color, 0.06);
+  border-radius: 16px;
+  padding: 12px 14px 12px 14px;
+}
+
+.pen-title { font-weight: 700; }
+.pen-sub { opacity: 0.62; font-size: 0.85em; }
+.pen-hint { opacity: 0.65; font-size: 0.9em; }
+.pen-display-icon { opacity: 0.9; }
+
+.pen-section {
+  font-size: 0.72em;
+  font-weight: 800;
+  letter-spacing: 1.2px;
+  opacity: 0.5;
+  margin-top: 6px;
+}
+
+.pen-row-label { opacity: 0.8; font-size: 0.92em; }
+.pen-row-icon { opacity: 0.7; }
+.pen-value { font-feature-settings: "tnum"; opacity: 0.75; font-size: 0.9em; }
+.pen-controls { padding-top: 6px; }
+
+/* the big brightness slider: a pill that fills with the accent colour */
+.pen-big { min-height: 34px; }
+.pen-big .pen-row-icon { opacity: 0.9; }
+.pen-big scale.pen-slider trough {
+  min-height: 12px;
+  border-radius: 8px;
+  background-color: alpha(@window_fg_color, 0.14);
+}
+.pen-big scale.pen-slider highlight {
+  border-radius: 8px;
+  background-image: linear-gradient(to right, alpha(@accent_bg_color, 0.55), @accent_bg_color);
+}
+.pen-big scale.pen-slider slider {
+  min-width: 22px;
+  min-height: 22px;
+  background: white;
+  border: none;
+  box-shadow: 0 1px 4px alpha(black, 0.45);
+}
+
+scale.pen-slider trough {
+  min-height: 6px;
+  border-radius: 4px;
+  background-color: alpha(@window_fg_color, 0.14);
+}
+scale.pen-slider highlight {
+  border-radius: 4px;
+  background-color: @accent_bg_color;
+}
+scale.pen-slider slider {
+  min-width: 16px;
+  min-height: 16px;
+  background: white;
+  border: none;
+  box-shadow: 0 1px 3px alpha(black, 0.45);
+}
+.pen-red scale.pen-slider highlight { background-color: #e5484d; }
+.pen-green scale.pen-slider highlight { background-color: #3fb950; }
+.pen-blue scale.pen-slider highlight { background-color: #4c8dff; }
+
+.pen-toast {
+  background-color: alpha(@accent_bg_color, 0.85);
+  color: @accent_fg_color;
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+.pen-toast.error { background-color: alpha(@error_bg_color, 0.9); color: @error_fg_color; }
+
+popover.pen-menu > contents { padding: 4px; border-radius: 12px; }
+popover.pen-menu button { border-radius: 8px; padding: 6px 12px; min-height: 28px; }
+
+/* on-screen indicators */
+.pen-osd {
+  background-color: alpha(@window_bg_color, 0.95);
+  color: @window_fg_color;
+  border-radius: 18px;
+  padding: 14px 20px;
+  border: 1px solid alpha(@window_fg_color, 0.12);
+  box-shadow: 0 6px 24px alpha(black, 0.5);
+}
+.pen-osd-title { font-weight: 700; font-size: 0.9em; }
+levelbar.pen-osd-bar trough { min-height: 8px; border-radius: 5px; background-color: alpha(@window_fg_color, 0.16); }
+levelbar.pen-osd-bar block.filled { border-radius: 5px; background-color: @accent_bg_color; }
+levelbar.pen-osd-bar block.empty { background: transparent; }
+
+.pen-identify {
+  background-color: alpha(black, 0.82);
+  border-radius: 24px;
+  padding: 24px 40px;
+  border: 2px solid @accent_bg_color;
+}
+.pen-identify-name { color: white; font-size: 56px; font-weight: 800; }
+
+/* arrangement canvas */
+.pen-canvas { border-radius: 14px; background-color: alpha(@window_fg_color, 0.05); }
+
+.pen-chip {
+  font-size: 0.68em;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  padding: 1px 7px;
+  border-radius: 8px;
+  background-color: alpha(@accent_bg_color, 0.28);
+  color: @accent_color;
+}
+.pen-screen {
+  background-color: alpha(@accent_bg_color, 0.30);
+  border: 2px solid alpha(@accent_bg_color, 0.9);
+  border-radius: 8px;
+  padding: 4px 6px;
+  min-width: 40px;
+  min-height: 24px;
+}
+.pen-screen.dragging { background-color: alpha(@accent_bg_color, 0.5); }
+.pen-screen-title { font-weight: 700; font-size: 0.85em; }
+.pen-screen-sub { opacity: 0.7; font-size: 0.7em; }

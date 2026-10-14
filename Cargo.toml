@@ -1,0 +1,41 @@
+[package]
+name = "penumbra"
+version = "0.1.0"
+edition = "2021"
+description = "Display control for Wayland: DDC/CI brightness, resolution, scaling, virtual screens, living in the tray (a BetterDisplay-style utility for Linux)"
+license = "MIT"
+
+[lib]
+name = "penumbra"
+path = "src/lib.rs"
+
+[[bin]]
+name = "penumbra"
+path = "src/main.rs"
+
+[dependencies]
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+calloop = "0.14"
+calloop-wayland-source = "0.4"
+rustix = { version = "1", features = ["fs", "shm"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-channel = "2"
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
+clap = { version = "4", features = ["derive"] }
+gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }
+glib = "0.22"
+adw = { package = "libadwaita", version = "0.9", features = ["v1_6"] }
+gtk4-layer-shell = "0.8"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+directories = "6"
+
+[profile.release]
+lto = "thin"
+opt-level = 2
+strip = true
