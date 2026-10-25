@@ -141,6 +141,25 @@ pub fn parse_getvcp(text: &str) -> HashMap<u8, VcpValue> {
     out
 }
 
+/// `VCP 10 C 50 100` -> {0x10: "C 50 100"}: the value as ddcutil prints it, whatever its type
+/// (the probe compares these as plain text, so unknown vendor codes work too).
+pub fn parse_raw(text: &str) -> BTreeMap<u8, String> {
+    let mut out = BTreeMap::new();
+    for line in text.lines() {
+        let mut it = line.split_whitespace();
+        if it.next() != Some("VCP") {
+            continue;
+        }
+        let Some(code) = it.next().and_then(|c| u8::from_str_radix(c, 16).ok()) else { continue };
+        let rest: Vec<&str> = it.collect();
+        if rest.is_empty() || rest[0] == "ERR" {
+            continue;
+        }
+        out.insert(code, rest.join(" "));
+    }
+    out
+}
+
 pub fn parse_capabilities(text: &str) -> DdcCaps {
     let mut caps = DdcCaps::default();
     let mut feature: Option<(u8, usize)> = None;
@@ -283,6 +302,33 @@ impl DdcBackend for Ddcutil {
     fn set(&self, bus: u32, code: u8, value: u32) -> Result<(), DdcError> {
         let args = vec![s("--bus"), bus.to_string(), s("--noverify"), s("setvcp"), format!("{code:02x}"), value.to_string()];
         self.run(&args, self.timeout).map(|_| ())
+    }
+}
+
+impl Ddcutil {
+    /// Every code the monitor answers, raw (read-only): `ddcutil getvcp SCAN` tries 0x00..0xff except
+    /// the write-only ones, so the vendor range 0xE0-0xFF is included.
+    pub fn scan(&self, bus: u32) -> Result<BTreeMap<u8, String>, DdcError> {
+        let args = vec![s("--bus"), bus.to_string(), s("--terse"), s("getvcp"), s("SCAN")];
+        let (ok, out, err) = self.run_full(&args, Duration::from_secs(300))?;
+        let values = parse_raw(&out);
+        if values.is_empty() && !ok {
+            let msg = if err.trim().is_empty() { out } else { err };
+            return Err(DdcError::Failed(msg.trim().lines().last().unwrap_or("unknown error").to_string()));
+        }
+        Ok(values)
+    }
+
+    /// The raw values of some codes (read-only), 16 per ddcutil call.
+    pub fn read_raw(&self, bus: u32, codes: &[u8]) -> Result<BTreeMap<u8, String>, DdcError> {
+        let mut all = BTreeMap::new();
+        for chunk in codes.chunks(16) {
+            let mut args = vec![s("--bus"), bus.to_string(), s("--terse"), s("getvcp")];
+            args.extend(chunk.iter().map(|c| format!("{c:02x}")));
+            let (_ok, out, _err) = self.run_full(&args, self.timeout)?;
+            all.extend(parse_raw(&out));
+        }
+        Ok(all)
     }
 }
 

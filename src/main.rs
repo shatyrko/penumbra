@@ -81,6 +81,28 @@ enum Cmd {
     Autostart { state: OnOff },
     /// Put a launcher entry and the icon into your applications menu
     InstallLauncher,
+    /// Find a monitor's own settings in DDC/CI (read-only, never writes to the monitor)
+    Probe {
+        #[command(subcommand)]
+        action: ProbeCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProbeCmd {
+    /// Read every code the monitor answers, with its value
+    Scan {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Save the current values under a name
+    Snap { name: String },
+    /// Saved snapshots
+    List,
+    /// What changed between two snapshots (or one snapshot and now)
+    Diff { a: String, b: Option<String> },
+    /// Live: change a setting in the monitor's menu and see which code moves (Ctrl+C stops)
+    Watch,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy)]
@@ -121,6 +143,19 @@ fn main() -> ExitCode {
             }
         }
         Cmd::Autostart { state } => return autostart(matches!(state, OnOff::On)),
+        Cmd::Probe { action } => {
+            let r = match action {
+                ProbeCmd::Scan { json } => penumbra::probe::scan(&d, json),
+                ProbeCmd::Snap { name } => penumbra::probe::snap(&d, &name),
+                ProbeCmd::List => penumbra::probe::list(),
+                ProbeCmd::Diff { a, b } => penumbra::probe::diff_cmd(&d, &a, b.as_deref()),
+                ProbeCmd::Watch => penumbra::probe::watch(&d),
+            };
+            return match r {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => fail(&e),
+            };
+        }
         Cmd::InstallLauncher => {
             return match penumbra::autostart::install_launcher() {
                 Ok(p) => {
