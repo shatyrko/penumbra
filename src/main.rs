@@ -81,6 +81,11 @@ enum Cmd {
     Autostart { state: OnOff },
     /// Put a launcher entry and the icon into your applications menu
     InstallLauncher,
+    /// The monitor's light (LampArray over USB): status, own, off, on, colour <#rrggbb|white|warm|purple|blue|red|sunset|ocean|aurora>, brightness <50|+10|-10>
+    Light {
+        action: Option<String>,
+        value: Option<String>,
+    },
     /// Find a monitor's own settings in DDC/CI (read-only, never writes to the monitor)
     Probe {
         #[command(subcommand)]
@@ -187,6 +192,7 @@ fn main() -> ExitCode {
         Cmd::Disable => Command::Enable { display: d, on: false },
         Cmd::Vrr { state } => Command::Vrr { display: d, on: matches!(state, OnOff::On) },
         Cmd::Name { nickname } => Command::Name { display: d, nickname },
+        Cmd::Light { action, value } => Command::Light { display: d, action: action.unwrap_or_default(), value: value.unwrap_or_default() },
         Cmd::Profile { action } => match action {
             ProfileCmd::Save { name } => Command::ProfileSave { name },
             ProfileCmd::Apply { name } => Command::ProfileApply { name },
@@ -256,6 +262,17 @@ fn run(cmd: Command) -> Response {
         Err(e) => return Response { ok: false, message: e, data: serde_json::Value::Null },
     };
     let needs_dimming = matches!(cmd, Command::Temperature { .. } | Command::Gamma { .. } | Command::Brightness { .. });
+    if let Command::Light { action, .. } = &cmd {
+        // A light needs no monitor probing: find it, set it, done.
+        let changes = !matches!(action.trim().to_ascii_lowercase().as_str(), "" | "status" | "list");
+        hub.wait_lights(Duration::from_secs(5));
+        let mut resp = execute(&hub, cmd);
+        if resp.ok && changes && !resp.message.contains("own light") {
+            resp.message.push_str("\nnote: without the penumbra app running, a monitor that sleeps goes back to its own light");
+        }
+        hub.shutdown();
+        return resp;
+    }
     let waited = Hub::wait_settled(&hub, Duration::from_secs(25));
     let mut resp = execute(&hub, cmd);
     hub.drain(Duration::from_secs(10));

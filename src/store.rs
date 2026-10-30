@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::light::LightSetting;
 use crate::model::{Gamma, OutputRequest};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +95,8 @@ pub struct Data {
     pub settings: Settings,
     pub displays: BTreeMap<String, DisplayMemory>,
     pub profiles: BTreeMap<String, Profile>,
+    /// Display lights (LampArray) by their identity.
+    pub lights: BTreeMap<String, LightSetting>,
 }
 
 pub struct Store {

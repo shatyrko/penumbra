@@ -35,6 +35,19 @@ impl SliderRow {
         value.add_css_class("pen-value");
         value.set_width_chars(6);
         value.set_xalign(1.0);
+        // The mouse wheel never moves a slider (too easy to change a value while scrolling the
+        // panel): it scrolls whatever the slider sits in instead.
+        let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
+        wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+        wheel.connect_scroll(|c, _dx, dy| {
+            let sw = c.widget().and_then(|w| w.ancestor(gtk::ScrolledWindow::static_type())).and_downcast::<gtk::ScrolledWindow>();
+            if let Some(sw) = sw {
+                let adj = sw.vadjustment();
+                adj.set_value(adj.value() + dy * adj.step_increment().max(40.0));
+            }
+            glib::Propagation::Stop
+        });
+        scale.add_controller(wheel);
         root.append(&img);
         root.append(&scale);
         root.append(&value);

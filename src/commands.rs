@@ -36,6 +36,8 @@ pub enum Command {
     VirtualDestroy { name: String },
     Refresh,
     Redetect,
+    /// The display's light: status, own, off, on, colour <#rrggbb|look>, look <name>, brightness <50|+10|-10>
+    Light { display: String, action: String, value: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -220,7 +222,72 @@ pub fn execute(hub: &Hub, cmd: Command) -> Response {
             hub.redetect();
             Response::ok("detecting monitors")
         }
+        Command::Light { display, action, value } => light(hub, &display, &action, &value, step),
     }
+}
+
+fn light(hub: &Hub, display: &str, action: &str, value: &str, step: f64) -> Response {
+    use crate::light::{look_label, parse_colour, LightMode, LOOKS};
+    let lights = hub.lights_for(display);
+    if lights.is_empty() {
+        return Response::err("no display light found (a monitor light connected by USB, see the README)");
+    }
+    let describe = |s: &crate::light::LightSetting| match s.mode {
+        LightMode::Own => "the monitor's own light".to_string(),
+        LightMode::Off => "off".to_string(),
+        LightMode::On => format!("{} at {}%", if s.look == "custom" { format!("#{:02x}{:02x}{:02x}", s.colour[0], s.colour[1], s.colour[2]) } else { look_label(&s.look).to_string() }, (s.brightness * 100.0).round()),
+    };
+    let action = action.trim().to_ascii_lowercase();
+    if matches!(action.as_str(), "" | "status" | "list") {
+        let text: Vec<String> = lights.iter().map(|l| format!("{} ({} lamps{}): {}", l.name, l.lamps, l.display.as_ref().map(|d| format!(", {d}")).unwrap_or_default(), describe(&l.setting))).collect();
+        return Response::ok(text.join("\n")).with(json!(lights));
+    }
+    let change: Box<dyn Fn(&mut crate::light::LightSetting) -> Result<(), String>> = match action.as_str() {
+        "own" | "auto" | "default" | "monitor" => Box::new(|s| { s.mode = LightMode::Own; Ok(()) }),
+        "off" => Box::new(|s| { s.mode = LightMode::Off; Ok(()) }),
+        "on" => Box::new(|s| { s.mode = LightMode::On; Ok(()) }),
+        "colour" | "color" | "look" | "preset" => {
+            let v = value.trim().to_ascii_lowercase();
+            if let Some((key, _, _)) = LOOKS.iter().find(|l| l.0 == v || l.1.to_ascii_lowercase() == v) {
+                let key = key.to_string();
+                Box::new(move |s| { s.look = key.clone(); s.mode = LightMode::On; Ok(()) })
+            } else if let Some(c) = parse_colour(&v) {
+                Box::new(move |s| { s.look = "custom".into(); s.colour = c; s.mode = LightMode::On; Ok(()) })
+            } else {
+                let names: Vec<&str> = LOOKS.iter().filter(|l| l.0 != "custom").map(|l| l.0).collect();
+                return Response::err(format!("not a colour: {value} (#rrggbb or one of {})", names.join(", ")));
+            }
+        }
+        "brightness" => {
+            let v = value.to_string();
+            Box::new(move |s| {
+                let t = percent(&v, s.brightness, step).ok_or_else(|| format!("not a brightness: {v}"))?;
+                s.brightness = t.clamp(0.0, 1.0);
+                if s.mode == LightMode::Own {
+                    s.mode = LightMode::On;
+                }
+                Ok(())
+            })
+        }
+        _ => return Response::err(format!("unknown light action: {action} (status, own, off, on, colour, brightness)")),
+    };
+    let mut msgs = Vec::new();
+    for l in &lights {
+        let mut err = None;
+        let r = hub.set_light(&l.id, |s| {
+            if let Err(e) = change(s) {
+                err = Some(e);
+            }
+        });
+        if let Some(e) = err {
+            return Response::err(e);
+        }
+        match r {
+            Ok(s) => msgs.push(format!("{}: {}", l.name, describe(&s))),
+            Err(e) => msgs.push(format!("{}: {e}", l.name)),
+        }
+    }
+    Response::ok(msgs.join("\n"))
 }
 
 fn each(hub: &Hub, target: &str, mut f: impl FnMut(&Hub, &str, &DisplayView) -> Result<String, String>) -> Response {

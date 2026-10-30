@@ -1,6 +1,7 @@
 pub mod colour;
 pub mod ddc;
 pub mod probe;
+pub mod light;
 pub mod model;
 pub mod wl;
 pub mod backlight;

@@ -10,6 +10,7 @@ use super::widgets::*;
 use crate::ddc::*;
 use crate::hub::{DdcStatus, DisplayView, Hub};
 use crate::layout;
+use crate::light::{LightMode, LOOKS};
 use crate::model::Transform;
 
 pub struct DisplayControls {
@@ -46,7 +47,20 @@ pub struct DisplayControls {
     rot: Vec<gtk::ToggleButton>,
     vrr: gtk::Box,
     vrr_switch: gtk::Switch,
+
+    light: gtk::Box,
+    light_id: Rc<RefCell<String>>,
+    light_mode: DropRow,
+    light_look: DropRow,
+    light_colour_row: gtk::Box,
+    #[allow(deprecated)]
+    light_chooser: gtk::ColorChooserWidget,
+    light_swatch: Rc<Cell<[u8; 3]>>,
+    light_swatch_area: gtk::DrawingArea,
+    light_bright: SliderRow,
 }
+
+const LIGHT_MODES: [(LightMode, &str); 3] = [(LightMode::Own, "Monitor's own"), (LightMode::Off, "Off"), (LightMode::On, "Colour")];
 
 impl DisplayControls {
     pub fn new(hub: &Hub, output: &str) -> DisplayControls {
@@ -167,7 +181,72 @@ impl DisplayControls {
         layout_box.append(&rot_row);
         layout_box.append(&vrr);
 
+        // ---- the monitor's light (LampArray over USB)
+        let light = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        light.append(&section_label("Light"));
+        let light_mode = DropRow::new("Light");
+        light_mode.set(&LIGHT_MODES.iter().map(|m| m.1.to_string()).collect::<Vec<_>>(), Some(0));
+        let light_look = DropRow::new("Colour");
+        light_look.set(&LOOKS.iter().map(|l| l.1.to_string()).collect::<Vec<_>>(), Some(0));
+        let light_colour_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        light_colour_row.add_css_class("pen-row");
+        let cl = gtk::Label::new(Some("Custom colour"));
+        cl.set_xalign(0.0);
+        cl.set_hexpand(true);
+        // The picker is a popup beside the panel (a dialog window would open full size on a
+        // tiling desktop).
+        let light_swatch = Rc::new(Cell::new([255u8, 255, 255]));
+        let light_swatch_area = gtk::DrawingArea::new();
+        light_swatch_area.set_content_width(28);
+        light_swatch_area.set_content_height(18);
+        {
+            let sw = light_swatch.clone();
+            light_swatch_area.set_draw_func(move |_, cr, w, h| {
+                let [r, g, b] = sw.get().map(|x| x as f64 / 255.0);
+                let (w, h, rad) = (w as f64, h as f64, 5.0);
+                cr.new_sub_path();
+                cr.arc(w - rad, rad, rad, -std::f64::consts::FRAC_PI_2, 0.0);
+                cr.arc(w - rad, h - rad, rad, 0.0, std::f64::consts::FRAC_PI_2);
+                cr.arc(rad, h - rad, rad, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+                cr.arc(rad, rad, rad, std::f64::consts::PI, 1.5 * std::f64::consts::PI);
+                cr.close_path();
+                cr.set_source_rgb(r, g, b);
+                let _ = cr.fill_preserve();
+                cr.set_source_rgba(0.5, 0.5, 0.5, 0.5);
+                cr.set_line_width(1.0);
+                let _ = cr.stroke();
+            });
+        }
+        #[allow(deprecated)]
+        let light_chooser = {
+            let c = gtk::ColorChooserWidget::new();
+            c.set_use_alpha(false);
+            c
+        };
+        let pop = gtk::Popover::new();
+        pop.set_child(Some(&light_chooser));
+        pop.set_position(gtk::PositionType::Left);
+        let light_colour = gtk::MenuButton::new();
+        light_colour.set_child(Some(&light_swatch_area));
+        light_colour.set_popover(Some(&pop));
+        light_colour.set_tooltip_text(Some("Pick a colour"));
+        light_colour.set_valign(gtk::Align::Center);
+        light_colour_row.append(&cl);
+        light_colour_row.append(&light_colour);
+        let light_bright = SliderRow::new("display-brightness-symbolic", 0.0, 100.0, 1.0, |v| format!("{}%", v.round()));
+        let lhint = gtk::Label::new(Some("Works while the light is switched on in the monitor's own menu."));
+        lhint.set_xalign(0.0);
+        lhint.set_wrap(true);
+        lhint.add_css_class("pen-hint");
+        light.append(&light_mode.root);
+        light.append(&light_look.root);
+        light.append(&light_colour_row);
+        light.append(&labeled("Brightness", &light_bright.root));
+        light.append(&lhint);
+        light.set_visible(false);
+
         root.append(&monitor);
+        root.append(&light);
         root.append(&colour);
         root.append(&layout_box);
 
@@ -202,8 +281,18 @@ impl DisplayControls {
             rot,
             vrr,
             vrr_switch,
+            light,
+            light_id: Rc::new(RefCell::new(String::new())),
+            light_mode,
+            light_look,
+            light_colour_row,
+            light_chooser,
+            light_swatch,
+            light_swatch_area,
+            light_bright,
         };
         c.wire(reset);
+        c.wire_light();
         c
     }
 
@@ -306,6 +395,94 @@ impl DisplayControls {
         }
     }
 
+    fn wire_light(&self) {
+        let set = {
+            let (hub, id) = (self.hub.clone(), self.light_id.clone());
+            Rc::new(move |f: &dyn Fn(&mut crate::light::LightSetting)| {
+                let id = id.borrow().clone();
+                if !id.is_empty() {
+                    if let Err(e) = hub.set_light(&id, |s| f(s)) {
+                        hub.error(format!("Light: {e}"));
+                    }
+                }
+            })
+        };
+        {
+            let (set, guard) = (set.clone(), self.guard.clone());
+            self.light_mode.connect_selected(move |i| {
+                if !guard.get() {
+                    if let Some((m, _)) = LIGHT_MODES.get(i) {
+                        set(&|s| s.mode = *m);
+                    }
+                }
+            });
+        }
+        {
+            let (set, guard) = (set.clone(), self.guard.clone());
+            self.light_look.connect_selected(move |i| {
+                if !guard.get() {
+                    if let Some(l) = LOOKS.get(i) {
+                        set(&|s| {
+                            s.look = l.0.to_string();
+                            s.mode = LightMode::On;
+                        });
+                    }
+                }
+            });
+        }
+        {
+            let (set, guard) = (set.clone(), self.guard.clone());
+            #[allow(deprecated)]
+            self.light_chooser.connect_rgba_notify(move |b| {
+                if guard.get() {
+                    return;
+                }
+                let c = gtk::prelude::ColorChooserExt::rgba(b);
+                let rgb = [c.red(), c.green(), c.blue()].map(|x| (x.clamp(0.0, 1.0) * 255.0).round() as u8);
+                set(&|s| {
+                    s.look = "custom".into();
+                    s.colour = rgb;
+                    s.mode = LightMode::On;
+                });
+            });
+        }
+        {
+            let set = set.clone();
+            self.light_bright.connect_changed(move |v| {
+                set(&|s| {
+                    s.brightness = v / 100.0;
+                    if s.mode == LightMode::Own {
+                        s.mode = LightMode::On;
+                    }
+                })
+            });
+        }
+    }
+
+    fn update_light(&self, v: &DisplayView) {
+        let Some(l) = &v.light else {
+            self.light.set_visible(false);
+            return;
+        };
+        self.light.set_visible(true);
+        *self.light_id.borrow_mut() = l.id.clone();
+        let s = &l.setting;
+        let mode = LIGHT_MODES.iter().position(|m| m.0 == s.mode).unwrap_or(0);
+        self.light_mode.set(&LIGHT_MODES.iter().map(|m| m.1.to_string()).collect::<Vec<_>>(), Some(mode));
+        let look = LOOKS.iter().position(|x| x.0 == s.look).unwrap_or(LOOKS.len() - 1);
+        self.light_look.set(&LOOKS.iter().map(|x| x.1.to_string()).collect::<Vec<_>>(), Some(look));
+        let on = s.mode == LightMode::On;
+        self.light_look.root.set_visible(on);
+        self.light_colour_row.set_visible(on && s.look == "custom");
+        self.light_bright.root.parent().unwrap().set_visible(on);
+        let [r, g, b] = s.colour.map(|x| x as f32 / 255.0);
+        #[allow(deprecated)]
+        gtk::prelude::ColorChooserExt::set_rgba(&self.light_chooser, &gtk::gdk::RGBA::new(r, g, b, 1.0));
+        self.light_swatch.set(s.colour);
+        self.light_swatch_area.queue_draw();
+        self.light_bright.set_quiet(s.brightness * 100.0);
+    }
+
     pub fn set_output(&self, name: &str) {
         *self.name.borrow_mut() = name.to_string();
     }
@@ -362,6 +539,8 @@ impl DisplayControls {
             }
             None => self.monitor.set_visible(false),
         }
+
+        self.update_light(v);
 
         // -- colour
         self.temp.set_quiet(v.gamma.temperature);

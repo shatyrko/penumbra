@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::backlight::Backlight;
 use crate::brightness;
 use crate::compositor;
+use crate::light::{self, LampArray, LightSetting};
 use crate::ddc::*;
 use crate::model::*;
 use crate::queue::JobQueue;
@@ -130,6 +131,18 @@ pub struct DisplayView {
     pub gamma: Gamma,
     pub ddc: Option<DdcView>,
     pub hidden: bool,
+    /// The display's own light (LampArray over USB), when it has one.
+    pub light: Option<LightView>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LightView {
+    pub id: String,
+    pub name: String,
+    pub lamps: usize,
+    pub setting: LightSetting,
+    /// The display it belongs to (connector name).
+    pub display: Option<String>,
 }
 
 impl DisplayView {
@@ -184,6 +197,8 @@ struct Inner {
     callbacks: Mutex<HashMap<u64, Done>>,
     stopping: AtomicBool,
     last_refresh: Mutex<Option<Instant>>,
+    lights: Mutex<Vec<LampArray>>,
+    light_failed: Mutex<HashSet<std::path::PathBuf>>,
 }
 
 #[derive(Clone)]
@@ -227,6 +242,8 @@ impl Hub {
             callbacks: Mutex::new(HashMap::new()),
             stopping: AtomicBool::new(false),
             last_refresh: Mutex::new(None),
+            lights: Mutex::new(Vec::new()),
+            light_failed: Mutex::new(HashSet::new()),
         });
         let hub = Hub(inner);
         hub.spawn_threads(wl_rx);
@@ -258,6 +275,26 @@ impl Hub {
                 }
                 if inner.dirty.swap(false, Ordering::Relaxed) {
                     inner.store.lock().unwrap().save();
+                }
+            })
+            .unwrap();
+
+        // Display lights: find them (hotplug), keep showing the chosen colours (a monitor that
+        // slept or was switched off goes back to its own effect)
+        let w = Arc::downgrade(&self.0);
+        std::thread::Builder::new()
+            .name("penumbra-lights".into())
+            .spawn(move || {
+                let start = Instant::now();
+                loop {
+                    let Some(inner) = w.upgrade() else { return };
+                    if inner.stopping.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    Hub(inner).light_tick();
+                    // Look often while the displays are still arriving, then every 3 s.
+                    let pause = if start.elapsed() < Duration::from_secs(10) { 500 } else { 3000 };
+                    std::thread::sleep(Duration::from_millis(pause));
                 }
             })
             .unwrap();
@@ -393,6 +430,7 @@ impl Hub {
     pub fn views(&self) -> Vec<DisplayView> {
         let st = self.0.state.lock().unwrap();
         let store = self.0.store.lock().unwrap();
+        let lights = self.0.lights.lock().unwrap();
         st.outputs
             .iter()
             .map(|o| {
@@ -417,9 +455,120 @@ impl Hub {
                     gamma,
                     ddc,
                     hidden: mem.map(|m| m.hidden).unwrap_or(false),
+                    light: lights
+                        .iter()
+                        .find(|l| light::belongs_to(&l.found, &o.model, &o.serial))
+                        .map(|l| light_view(l, &store.data.lights, Some(o.name.clone()))),
                 }
             })
             .collect()
+    }
+
+    // ------------------------------------------------------------ display lights
+    //
+    // Lock order: state → store → lights. The light thread copies what it needs and never
+    // holds `lights` while it takes the others.
+
+    fn light_tick(&self) {
+        let outputs: Vec<(String, String)> = self.0.state.lock().unwrap().outputs.iter().map(|o| (o.model.clone(), o.serial.clone())).collect();
+        let found = light::scan();
+        let settings = self.0.store.lock().unwrap().data.lights.clone();
+        let mut changed = false;
+        {
+            let mut failed = self.0.light_failed.lock().unwrap();
+            failed.retain(|p| found.iter().any(|f| &f.dev == p));
+            let mut lights = self.0.lights.lock().unwrap();
+            let before = lights.len();
+            lights.retain(|l| found.iter().any(|f| f.dev == l.found.dev && f.id == l.found.id));
+            changed |= lights.len() != before;
+            for f in found {
+                if lights.iter().any(|l| l.found.dev == f.dev) || failed.contains(&f.dev) {
+                    continue;
+                }
+                // Only the lights of connected displays: a keyboard's or mouse's light is not ours.
+                if !outputs.iter().any(|(m, s)| light::belongs_to(&f, m, s)) {
+                    continue;
+                }
+                let dev = f.dev.clone();
+                match LampArray::open(f) {
+                    Ok(l) => {
+                        log::info!("light {} ({} lamps) on {}", l.found.name, l.lamps.len(), l.found.dev.display());
+                        lights.push(l);
+                        changed = true;
+                    }
+                    Err(e) => {
+                        log::warn!("light {}: {e}", dev.display());
+                        failed.insert(dev);
+                    }
+                }
+            }
+            // Send the colours again every round: cheap, and it brings a light back that went
+            // to its own effect while the monitor slept.
+            let mut broken = Vec::new();
+            for (i, l) in lights.iter_mut().enumerate() {
+                let s = settings.get(&l.found.id).cloned().unwrap_or_default();
+                if let Err(e) = l.apply(&s, true) {
+                    log::warn!("light {}: {e}", l.found.name);
+                    broken.push(i);
+                }
+            }
+            for i in broken.into_iter().rev() {
+                lights.remove(i);
+                changed = true;
+            }
+        }
+        if changed {
+            self.changed();
+        }
+    }
+
+    /// The lights of the displays `target` names; all lights when none of them has one.
+    pub fn lights_for(&self, target: &str) -> Vec<LightView> {
+        let names = self.resolve(target);
+        let all: Vec<LightView> = {
+            let views = self.views();
+            let store = self.0.store.lock().unwrap();
+            let lights = self.0.lights.lock().unwrap();
+            lights
+                .iter()
+                .map(|l| {
+                    let d = views.iter().find(|v| light::belongs_to(&l.found, &v.output.model, &v.output.serial)).map(|v| v.name.clone());
+                    light_view(l, &store.data.lights, d)
+                })
+                .collect()
+        };
+        let some: Vec<LightView> = all.iter().filter(|l| l.display.as_ref().is_some_and(|d| names.contains(d))).cloned().collect();
+        if some.is_empty() { all } else { some }
+    }
+
+    /// Change a light's setting, remember it and show it at once.
+    pub fn set_light(&self, id: &str, f: impl FnOnce(&mut LightSetting)) -> Result<LightSetting, String> {
+        let s = {
+            let mut store = self.0.store.lock().unwrap();
+            let s = store.data.lights.entry(id.to_string()).or_default();
+            f(s);
+            s.brightness = s.brightness.clamp(0.0, 1.0);
+            s.clone()
+        };
+        self.0.dirty.store(true, Ordering::Relaxed);
+        let r = {
+            let mut lights = self.0.lights.lock().unwrap();
+            match lights.iter_mut().find(|l| l.found.id == id) {
+                Some(l) => l.apply(&s, false),
+                None => Err("the light is not connected".to_string()),
+            }
+        };
+        self.changed();
+        r.map(|_| s)
+    }
+
+    /// For a short-lived command line instance: wait for the displays, then look for lights.
+    pub fn wait_lights(&self, timeout: Duration) {
+        let end = Instant::now() + timeout;
+        while Instant::now() < end && !self.0.state.lock().unwrap().got_outputs {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        self.light_tick();
     }
 
     pub fn view(&self, name: &str) -> Option<DisplayView> {
@@ -1130,5 +1279,15 @@ fn full_request(o: &OutputInfo) -> OutputRequest {
         transform: Some(o.transform),
         scale: Some(o.scale),
         vrr: o.vrr,
+    }
+}
+
+fn light_view(l: &LampArray, settings: &BTreeMap<String, LightSetting>, display: Option<String>) -> LightView {
+    LightView {
+        id: l.found.id.clone(),
+        name: l.found.name.clone(),
+        lamps: l.lamps.len(),
+        setting: settings.get(&l.found.id).cloned().unwrap_or_default(),
+        display,
     }
 }

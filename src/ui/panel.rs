@@ -131,9 +131,13 @@ impl Panel {
         body.append(&off_box);
         let scroller = gtk::ScrolledWindow::new();
         scroller.set_child(Some(&body));
+        // As tall as the content, up to the screen's height (see `fit_height`); beyond that the
+        // content scrolls, with a scrollbar that only shows while scrolling.
         scroller.set_propagate_natural_height(true);
         scroller.set_max_content_height(680);
         scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
+        scroller.set_vscrollbar_policy(gtk::PolicyType::Automatic);
+        scroller.set_overlay_scrolling(true);
         scroller.set_min_content_width(440);
 
         let toast = gtk::Label::new(None);
@@ -409,14 +413,33 @@ impl Panel {
             if let Some(mon) = super::monitor_for(&name) {
                 w.set_monitor(Some(&mon));
                 self.scrim.set_monitor(Some(&mon));
-                let h = mon.geometry().height();
-                self.scroller.set_max_content_height(((h as f64 * 0.78) as i32 - 120).clamp(280, 900));
+                let h = crate::compositor::usable_height(&name).unwrap_or_else(|| mon.geometry().height());
+                self.fit_height(h, s.panel_margin);
             }
         }
         self.hub.refresh(false);
         self.sync(&self.hub.views());
         self.scrim.present();
         w.present();
+    }
+
+    /// The tallest the content may be: the screen's usable height less the panel's own margins,
+    /// its header and a gap above and below.
+    fn fit_height(&self, screen: i32, margin: i32) {
+        const GAP: i32 = 12;
+        let outer = self.scroller.parent().and_then(|p| p.downcast::<gtk::Box>().ok());
+        let mut chrome = 2 * margin + 2 * GAP;
+        if let Some(o) = &outer {
+            chrome += o.margin_top() + o.margin_bottom();
+            let mut c = o.first_child();
+            while let Some(w) = c {
+                if w != *self.scroller.upcast_ref::<gtk::Widget>() && w.is_visible() {
+                    chrome += w.measure(gtk::Orientation::Vertical, -1).1;
+                }
+                c = w.next_sibling();
+            }
+        }
+        self.scroller.set_max_content_height((screen - chrome).max(200));
     }
 
     pub fn hide(&self) {

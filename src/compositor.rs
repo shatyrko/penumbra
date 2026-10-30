@@ -25,6 +25,29 @@ pub fn parse_focused(text: &str) -> Option<String> {
     None
 }
 
+/// The height of an output's usable area (without bars that reserve space), logical pixels.
+pub fn usable_height(output: &str) -> Option<i32> {
+    let out = Command::new("umbriel").arg("outputs").output().ok()?;
+    parse_usable_height(&String::from_utf8_lossy(&out.stdout), output)
+}
+
+pub fn parse_usable_height(text: &str, output: &str) -> Option<i32> {
+    let mut current = String::new();
+    for line in text.lines() {
+        if !line.starts_with(' ') && !line.trim().is_empty() {
+            current = line.split_whitespace().next().unwrap_or("").to_string();
+        } else if current == output {
+            // "  Usable area: 2560x1440+1920+0"
+            if let Some(v) = line.trim().strip_prefix("Usable area:") {
+                let size = v.trim().split('+').next()?;
+                let h: i32 = size.split('x').nth(1)?.parse().ok()?;
+                return (h > 0).then_some(h);
+            }
+        }
+    }
+    None
+}
+
 pub fn valid_virtual_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 32 && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
@@ -62,6 +85,14 @@ mod tests {
         let t = "eDP-1 \"BOE (eDP-1)\"\n  Enabled: yes\n  Focused: no\nHDMI-A-1 \"HP\"\n  Enabled: yes\n  Focused: yes\n";
         assert_eq!(parse_focused(t).as_deref(), Some("HDMI-A-1"));
         assert_eq!(parse_focused("eDP-1 \"x\"\n  Focused: no\n"), None);
+    }
+
+    #[test]
+    fn usable_parse() {
+        let t = "eDP-1 \"BOE\"\n  Usable area: 0x0+0+0\nDP-3 \"HP\"\n  Scale: 1.5\n  Usable area: 2560x1400+1920+40\n";
+        assert_eq!(parse_usable_height(t, "DP-3"), Some(1400));
+        assert_eq!(parse_usable_height(t, "eDP-1"), None);
+        assert_eq!(parse_usable_height(t, "HDMI-A-1"), None);
     }
 
     #[test]
